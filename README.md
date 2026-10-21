@@ -18,7 +18,7 @@ flowchart LR
 * **FastAPI**: Non-blocking asynchronous API framework providing high-throughput endpoints for telemetry ingestion, time-series querying, aggregation summaries, and identity management.
 * **MongoDB for readings**: Manages high-volume sensor curve readings and time-series document storage using `motor`. Utilizes a compound B-tree index on `(device_id, timestamp)` to eliminate in-memory sorting and collection scans, alongside aggregation pipelines (`$match`, `$project`, `$group`) for statistical summaries over sensor curve points.
 * **PostgreSQL for device registry & transactional identities**: Relational storage using `asyncpg` with connection pooling. Enforces ACID guarantees across user registrations, device/experiment metadata, and telemetry audit logging via atomic transactions (`async with conn.transaction():`).
-* **Modular React Dashboard**: Client-side single-page dashboard built with Vite + React featuring local boundary validation (physical temperature lower bound at absolute zero, device ID regex) prior to network transmission, paired with telemetry summary visualizations.
+* **Modular React Dashboard**: Client-side single-page dashboard built with Vite + React featuring local boundary validation (physical temperature lower bound at absolute zero, device ID regex) prior to network transmission, paired with telemetry summary visualizations. The component architecture and UI layout were designed in Figma.
 
 ---
 
@@ -82,6 +82,9 @@ The test suite is **100% deterministic and isolated**:
 ### 1. Backend Setup
 
 ```bash
+# Optional: Start PostgreSQL and MongoDB via Docker Compose
+docker compose up -d
+
 # Clone and enter directory
 cd fastapi-telemetry-portal
 
