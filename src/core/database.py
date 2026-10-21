@@ -12,6 +12,38 @@ from src.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# DDL for the PostgreSQL identity / metadata layer. Executed atomically at startup.
+POSTGRES_SCHEMA_DDL: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS users (
+        id          SERIAL PRIMARY KEY,
+        username    VARCHAR(32)  NOT NULL UNIQUE,
+        email       VARCHAR(254) NOT NULL UNIQUE,
+        full_name   VARCHAR(128),
+        created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS experiment_metadata (
+        id               SERIAL PRIMARY KEY,
+        user_id          INTEGER      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        experiment_name  VARCHAR(128) NOT NULL,
+        device_id        VARCHAR(64)  NOT NULL,
+        description      TEXT,
+        created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS experiment_metadata_user_id_idx ON experiment_metadata (user_id)",
+    """
+    CREATE TABLE IF NOT EXISTS telemetry_audit (
+        id           SERIAL PRIMARY KEY,
+        device_id    VARCHAR(64) NOT NULL,
+        recorded_at  TIMESTAMPTZ NOT NULL,
+        point_count  INTEGER     NOT NULL
+    )
+    """,
+)
+
 
 class Database:
     """Holds shared database clients for the application lifetime."""
@@ -23,8 +55,21 @@ class Database:
 db = Database()
 
 
+async def init_postgres_schema(pool: asyncpg.Pool) -> None:
+    """Create the users / experiment_metadata / audit tables inside a single transaction.
+
+    If any statement fails the whole transaction is rolled back, so the schema is
+    never left half-created.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for statement in POSTGRES_SCHEMA_DDL:
+                await conn.execute(statement)
+    logger.info("PostgreSQL schema (users, experiment_metadata, telemetry_audit) ensured")
+
+
 async def connect_to_databases() -> None:
-    """Initialise the PostgreSQL pool and MongoDB client, and ensure indexes."""
+    """Initialise the PostgreSQL pool and MongoDB client, and ensure schema/indexes."""
     try:
         db.pg_pool = await asyncpg.create_pool(
             dsn=settings.POSTGRES_URI,
@@ -32,6 +77,7 @@ async def connect_to_databases() -> None:
             max_size=settings.POSTGRES_POOL_MAX_SIZE,
         )
         logger.info("PostgreSQL connection pool created")
+        await init_postgres_schema(db.pg_pool)
 
         db.mongo_client = AsyncIOMotorClient(
             settings.MONGO_URI,

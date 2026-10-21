@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ABSOLUTE_ZERO_CELSIUS = -273.15
+DEVICE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
 
 
 class TelemetryPayload(BaseModel):
@@ -14,7 +15,7 @@ class TelemetryPayload(BaseModel):
 
     device_id: str = Field(
         ...,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$",
+        pattern=DEVICE_ID_PATTERN,
         description="Alphanumeric device ID (3-64 chars; '-' and '_' allowed after the first char)",
         examples=["sensor-001"],
     )
@@ -39,3 +40,59 @@ class TelemetryPayload(BaseModel):
                     f"({ABSOLUTE_ZERO_CELSIUS} °C)"
                 )
         return value
+
+
+class TelemetrySummary(BaseModel):
+    """Aggregated statistics across all curve points for a device."""
+
+    device_id: str
+    readings: int = Field(..., description="Number of telemetry documents aggregated")
+    point_count: int = Field(..., description="Total number of curve points aggregated")
+    min: float
+    max: float
+    mean: float
+
+
+# --------------------------------------------------------------------------- #
+# PostgreSQL identity layer
+# --------------------------------------------------------------------------- #
+class ExperimentMetadataCreate(BaseModel):
+    """Optional experiment registered atomically alongside a new user."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    experiment_name: str = Field(..., min_length=1, max_length=128)
+    device_id: str = Field(..., pattern=DEVICE_ID_PATTERN)
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class UserCreate(BaseModel):
+    """Request body for creating a structured user identity."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    username: str = Field(..., pattern=r"^[A-Za-z0-9_.-]{3,32}$", examples=["shivank"])
+    email: str = Field(
+        ...,
+        max_length=254,
+        pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+        examples=["researcher@example.com"],
+    )
+    full_name: str | None = Field(default=None, max_length=128)
+    experiment: ExperimentMetadataCreate | None = None
+
+    @field_validator("email")
+    @classmethod
+    def normalise_email(cls, value: str) -> str:
+        return value.lower()
+
+
+class UserResponse(BaseModel):
+    """Persisted user identity returned by the API."""
+
+    id: int
+    username: str
+    email: str
+    full_name: str | None
+    created_at: datetime
+    experiment_id: int | None = None

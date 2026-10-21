@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from src.api.routes import router as telemetry_router
+from src.api.routes import users_router
 from src.core.config import settings
 from src.core.database import close_database_connections, connect_to_databases
 
@@ -27,6 +28,7 @@ app = FastAPI(
 )
 
 app.include_router(telemetry_router, prefix="/api/v1")
+app.include_router(users_router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["health"])
