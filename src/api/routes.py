@@ -29,20 +29,28 @@ async def ingest_telemetry(
     collection: AsyncIOMotorCollection = Depends(get_telemetry_collection),
     pg_pool: asyncpg.Pool = Depends(get_pg_pool),
 ) -> dict[str, Any]:
-    """Ingest a validated telemetry payload into MongoDB and record metadata in PostgreSQL."""
+    """Ingest a validated telemetry payload into MongoDB and record metadata in PostgreSQL.
+
+    If the PostgreSQL audit write fails, a compensating delete removes the newly
+    inserted MongoDB document so no orphaned record remains across stores.
+    """
     document = payload.model_dump()
     result = await collection.insert_one(document)
 
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO telemetry_audit (device_id, recorded_at, point_count)
-            VALUES ($1, $2, $3)
-            """,
-            payload.device_id,
-            payload.timestamp,
-            len(payload.curve_points),
-        )
+    try:
+        async with pg_pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO telemetry_audit (device_id, recorded_at, point_count)
+                VALUES ($1, $2, $3)
+                """,
+                payload.device_id,
+                payload.timestamp,
+                len(payload.curve_points),
+            )
+    except Exception:
+        await collection.delete_one({"_id": result.inserted_id})
+        raise
 
     return {
         "status": "created",
@@ -50,6 +58,8 @@ async def ingest_telemetry(
         "device_id": payload.device_id,
         "timestamp": payload.timestamp,
         "points_received": len(payload.curve_points),
+        "unit": payload.unit,
+        "parameters": payload.parameters,
     }
 
 

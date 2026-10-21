@@ -1,9 +1,16 @@
 import { useState } from "react";
-import { ApiError, fetchTelemetrySummary, submitTelemetry } from "../api/telemetryClient.js";
+import {
+  ApiError,
+  createUser,
+  fetchTelemetrySummary,
+  submitTelemetry,
+} from "../api/telemetryClient.js";
 
 // Mirrors the backend Pydantic constraints in src/models/schemas.py so invalid
 // input is caught before a request is ever sent.
 const DEVICE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$/;
+const USERNAME_PATTERN = /^[A-Za-z0-9_.-]{3,32}$/;
+const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const ABSOLUTE_ZERO_C = -273.15;
 const MAX_POINTS = 10000;
 
@@ -38,6 +45,20 @@ export function validateTelemetry(deviceId, rawPoints) {
   return { errors, curvePoints };
 }
 
+export function validateUserRegistration({ username, email, experimentName, experimentDeviceId }) {
+  const errors = {};
+  if (!USERNAME_PATTERN.test(username)) {
+    errors.username = "Username must be 3–32 characters (letters, digits, '_', '.', '-').";
+  }
+  if (!EMAIL_PATTERN.test(email)) {
+    errors.email = "Enter a valid email address.";
+  }
+  if (experimentName && !DEVICE_ID_PATTERN.test(experimentDeviceId)) {
+    errors.experimentDeviceId = "Enter a valid Device ID (3–64 chars) for the experiment.";
+  }
+  return errors;
+}
+
 function StatCard({ label, value, unit }) {
   return (
     <div className="stat-card">
@@ -69,13 +90,28 @@ function SummaryView({ summary }) {
 }
 
 export default function TelemetryDashboard() {
+  // Telemetry ingestion state
   const [deviceId, setDeviceId] = useState("");
   const [rawPoints, setRawPoints] = useState("");
+  const [unit, setUnit] = useState("K");
+  const [pressureKpa, setPressureKpa] = useState("101.3");
+  const [sampleRateHz, setSampleRateHz] = useState("1000");
   const [fieldErrors, setFieldErrors] = useState({});
   const [status, setStatus] = useState({ type: "idle", message: "" });
   const [summary, setSummary] = useState(null);
 
+  // User identity & experiment registration state (POST /api/v1/users)
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [experimentName, setExperimentName] = useState("");
+  const [experimentDeviceId, setExperimentDeviceId] = useState("");
+  const [userErrors, setUserErrors] = useState({});
+  const [userStatus, setUserStatus] = useState({ type: "idle", message: "" });
+  const [createdUser, setCreatedUser] = useState(null);
+
   const isBusy = status.type === "loading";
+  const isUserBusy = userStatus.type === "loading";
 
   async function loadSummary(id) {
     try {
@@ -96,13 +132,26 @@ export default function TelemetryDashboard() {
       return; // Never fire the POST with invalid data.
     }
 
+    const parameters = {};
+    if (pressureKpa.trim() !== "" && Number.isFinite(Number(pressureKpa))) {
+      parameters.pressure_kpa = Number(pressureKpa);
+    }
+    if (sampleRateHz.trim() !== "" && Number.isFinite(Number(sampleRateHz))) {
+      parameters.sample_rate_hz = Number(sampleRateHz);
+    }
+
     setStatus({ type: "loading", message: "Submitting telemetry…" });
     try {
-      const result = await submitTelemetry({ deviceId: trimmedId, curvePoints });
+      const result = await submitTelemetry({
+        deviceId: trimmedId,
+        curvePoints,
+        unit: unit.trim() || "K",
+        parameters,
+      });
       await loadSummary(trimmedId);
       setStatus({
         type: "success",
-        message: `Stored ${result.points_received} points for ${result.device_id}.`,
+        message: `Stored ${result.points_received} points (${result.unit}) for ${result.device_id}.`,
       });
     } catch (err) {
       setStatus({ type: "error", message: err.message || "Request failed." });
@@ -125,9 +174,53 @@ export default function TelemetryDashboard() {
     }
   }
 
+  async function handleUserSubmit(event) {
+    event.preventDefault();
+    const trimmedUsername = username.trim();
+    const trimmedEmail = email.trim();
+    const trimmedExpName = experimentName.trim();
+    const trimmedExpDevice = experimentDeviceId.trim();
+
+    const errors = validateUserRegistration({
+      username: trimmedUsername,
+      email: trimmedEmail,
+      experimentName: trimmedExpName,
+      experimentDeviceId: trimmedExpDevice,
+    });
+    setUserErrors(errors);
+    if (Object.keys(errors).length > 0) {
+      setUserStatus({ type: "error", message: "Fix user registration errors before submitting." });
+      return;
+    }
+
+    const experiment = trimmedExpName
+      ? { experiment_name: trimmedExpName, device_id: trimmedExpDevice }
+      : undefined;
+
+    setUserStatus({ type: "loading", message: "Registering researcher identity…" });
+    try {
+      const result = await createUser({
+        username: trimmedUsername,
+        email: trimmedEmail,
+        fullName: fullName.trim() || undefined,
+        experiment,
+      });
+      setCreatedUser(result);
+      setUserStatus({
+        type: "success",
+        message: `Registered user #${result.id} (${result.email})${
+          result.experiment_id ? ` with experiment #${result.experiment_id}` : ""
+        }.`,
+      });
+    } catch (err) {
+      setUserStatus({ type: "error", message: err.message || "User registration failed." });
+    }
+  }
+
   return (
     <div className="dashboard">
       <form className="card" onSubmit={handleSubmit} noValidate>
+        <h2>Telemetry Curve Ingestion</h2>
         <label htmlFor="device-id">Device ID</label>
         <input
           id="device-id"
@@ -151,6 +244,39 @@ export default function TelemetryDashboard() {
         />
         {fieldErrors.curvePoints && <p className="field-error">{fieldErrors.curvePoints}</p>}
 
+        <div className="stat-grid" style={{ marginTop: "0.75rem" }}>
+          <div>
+            <label htmlFor="unit">Unit</label>
+            <input
+              id="unit"
+              value={unit}
+              onChange={(e) => setUnit(e.target.value)}
+              placeholder="K"
+              disabled={isBusy}
+            />
+          </div>
+          <div>
+            <label htmlFor="pressure-kpa">Pressure (kPa)</label>
+            <input
+              id="pressure-kpa"
+              value={pressureKpa}
+              onChange={(e) => setPressureKpa(e.target.value)}
+              placeholder="101.3"
+              disabled={isBusy}
+            />
+          </div>
+          <div>
+            <label htmlFor="sample-rate-hz">Sample Rate (Hz)</label>
+            <input
+              id="sample-rate-hz"
+              value={sampleRateHz}
+              onChange={(e) => setSampleRateHz(e.target.value)}
+              placeholder="1000"
+              disabled={isBusy}
+            />
+          </div>
+        </div>
+
         <div className="actions">
           <button type="submit" disabled={isBusy}>
             Submit telemetry
@@ -168,6 +294,83 @@ export default function TelemetryDashboard() {
       ) : (
         <p className="empty">No summary loaded yet.</p>
       )}
+
+      <form className="card" onSubmit={handleUserSubmit} noValidate>
+        <h2>Researcher Identity & Experiment Registration (PostgreSQL ACID)</h2>
+        <label htmlFor="username">Username</label>
+        <input
+          id="username"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          placeholder="shivank"
+          aria-invalid={Boolean(userErrors.username)}
+          disabled={isUserBusy}
+        />
+        {userErrors.username && <p className="field-error">{userErrors.username}</p>}
+
+        <label htmlFor="email">Email</label>
+        <input
+          id="email"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="researcher@example.com"
+          aria-invalid={Boolean(userErrors.email)}
+          disabled={isUserBusy}
+        />
+        {userErrors.email && <p className="field-error">{userErrors.email}</p>}
+
+        <label htmlFor="full-name">Full Name (optional)</label>
+        <input
+          id="full-name"
+          value={fullName}
+          onChange={(e) => setFullName(e.target.value)}
+          placeholder="Shivank Shukla"
+          disabled={isUserBusy}
+        />
+
+        <div className="stat-grid" style={{ marginTop: "0.75rem" }}>
+          <div>
+            <label htmlFor="experiment-name">Experiment Name (optional)</label>
+            <input
+              id="experiment-name"
+              value={experimentName}
+              onChange={(e) => setExperimentName(e.target.value)}
+              placeholder="Cryo Run 1"
+              disabled={isUserBusy}
+            />
+          </div>
+          <div>
+            <label htmlFor="experiment-device-id">Experiment Device ID</label>
+            <input
+              id="experiment-device-id"
+              value={experimentDeviceId}
+              onChange={(e) => setExperimentDeviceId(e.target.value)}
+              placeholder="sensor-001"
+              aria-invalid={Boolean(userErrors.experimentDeviceId)}
+              disabled={isUserBusy}
+            />
+            {userErrors.experimentDeviceId && (
+              <p className="field-error">{userErrors.experimentDeviceId}</p>
+            )}
+          </div>
+        </div>
+
+        <div className="actions">
+          <button type="submit" disabled={isUserBusy}>
+            Register Identity
+          </button>
+        </div>
+
+        {userStatus.message && (
+          <p className={`status status-${userStatus.type}`}>{userStatus.message}</p>
+        )}
+        {createdUser && (
+          <p className="status status-success" data-testid="created-user-summary">
+            Active Identity: <code>{createdUser.username}</code> (ID #{createdUser.id})
+          </p>
+        )}
+      </form>
     </div>
   );
 }

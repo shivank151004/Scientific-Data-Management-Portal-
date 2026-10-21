@@ -1,4 +1,4 @@
-// Thin fetch wrapper for the FastAPI telemetry endpoints.
+// Thin fetch wrapper for the FastAPI telemetry and user identity endpoints.
 // Requests go to a relative /api path; Vite proxies them to FastAPI in dev.
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api/v1";
@@ -40,13 +40,28 @@ async function request(path, options = {}) {
   return body;
 }
 
-export function submitTelemetry({ deviceId, curvePoints }) {
+export function submitTelemetry({ deviceId, curvePoints, unit = "K", parameters = {} }) {
   return request("/telemetry", {
     method: "POST",
-    body: JSON.stringify({ device_id: deviceId, curve_points: curvePoints }),
+    body: JSON.stringify({
+      device_id: deviceId,
+      curve_points: curvePoints,
+      unit,
+      parameters,
+    }),
   });
 }
 
 export function fetchTelemetrySummary(deviceId) {
   return request(`/telemetry/${encodeURIComponent(deviceId)}/summary`);
+}
+
+export function createUser({ username, email, fullName, experiment }) {
+  const payload = { username, email };
+  if (fullName) payload.full_name = fullName;
+  if (experiment) payload.experiment = experiment;
+  return request("/users", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }

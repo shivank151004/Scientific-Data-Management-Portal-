@@ -9,7 +9,7 @@ DEVICE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
 
 
 class TelemetryPayload(BaseModel):
-    """Incoming telemetry reading from a device."""
+    """Incoming multi-variable telemetry reading from a scientific device."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -28,6 +28,16 @@ class TelemetryPayload(BaseModel):
         min_length=1,
         max_length=10000,
         description="Temperature curve points in degrees Celsius",
+    )
+    unit: str = Field(
+        default="K",
+        min_length=1,
+        max_length=16,
+        description="Measurement unit for the curve series (e.g. 'K', 'C')",
+    )
+    parameters: dict[str, float | str] = Field(
+        default_factory=dict,
+        description="Multi-variable experimental parameters (e.g. pressure_kpa, sample_rate_hz, channel)",
     )
 
     @field_validator("curve_points")

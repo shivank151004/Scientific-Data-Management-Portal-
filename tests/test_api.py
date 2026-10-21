@@ -123,6 +123,12 @@ class FakeCollection:
         self.docs.append(doc)
         return FakeInsertResult(doc["_id"])
 
+    async def delete_one(self, query: dict[str, Any]) -> None:
+        for i, doc in enumerate(self.docs):
+            if _matches(doc, query):
+                self.docs.pop(i)
+                return
+
     def find(self, query: dict[str, Any]) -> FakeCursor:
         return FakeCursor([d for d in self.docs if _matches(d, query)])
 
@@ -138,9 +144,12 @@ class FakeConnection:
     def __init__(self) -> None:
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
         self.transactions_committed = 0
+        self.fail_on_execute = False
         self._next_id = {"users": 1, "experiment_metadata": 1}
 
     async def execute(self, sql: str, *args: Any) -> str:
+        if self.fail_on_execute:
+            raise RuntimeError("Simulated PostgreSQL audit write failure")
         self.executed.append((sql, args))
         return "OK"
 
@@ -209,7 +218,12 @@ async def client(
 async def test_post_valid_payload_returns_200(
     client: httpx.AsyncClient, fake_collection: FakeCollection, fake_pool: FakePool
 ) -> None:
-    payload = {"device_id": "sensor-001", "curve_points": [20.5, 21.0, -40.0, 100.25]}
+    payload = {
+        "device_id": "sensor-001",
+        "curve_points": [20.5, 21.0, -40.0, 100.25],
+        "unit": "K",
+        "parameters": {"pressure_kpa": 101.3, "sample_rate_hz": 1000.0, "channel": "ch-1"},
+    }
 
     response = await client.post(ENDPOINT, json=payload)
 
@@ -217,11 +231,27 @@ async def test_post_valid_payload_returns_200(
     body = response.json()
     assert body["device_id"] == "sensor-001"
     assert body["points_received"] == 4
+    assert body["unit"] == "K"
+    assert body["parameters"] == payload["parameters"]
     assert len(fake_collection.docs) == 1
     assert fake_collection.docs[0]["curve_points"] == payload["curve_points"]
+    assert fake_collection.docs[0]["parameters"] == payload["parameters"]
     # Single audit INSERT (schema DDL now runs once at startup, not per request)
     assert len(fake_pool.conn.executed) == 1
     assert "INSERT INTO telemetry_audit" in fake_pool.conn.executed[0][0]
+
+
+async def test_post_telemetry_compensating_delete_on_pg_failure(
+    client: httpx.AsyncClient, fake_collection: FakeCollection, fake_pool: FakePool
+) -> None:
+    fake_pool.conn.fail_on_execute = True
+    payload = {"device_id": "sensor-001", "curve_points": [20.5, 21.0]}
+
+    with pytest.raises(RuntimeError, match="Simulated PostgreSQL audit write failure"):
+        await client.post(ENDPOINT, json=payload)
+
+    # Compensating delete must have removed the orphaned MongoDB document
+    assert fake_collection.docs == []
 
 
 async def test_post_missing_device_id_returns_422(
